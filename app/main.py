@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.routers import auth, catalogos
 
 from app.core.config import settings
 from app.routers import auth
@@ -20,6 +21,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
+app.include_router(catalogos.router, prefix="/api/v1/catalogos", tags=["catalogos"])
 
 
 @app.get("/health")
