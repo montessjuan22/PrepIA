@@ -11,7 +11,10 @@ from app.core.database import Base
 class Usuario(Base):
     __tablename__ = "usuarios"
     __table_args__ = (
-        CheckConstraint("rol IN ('usuario','agente_soporte','admin')", name="ck_usuarios_rol"),
+        # v4: 'usuario' = candidato; se agrega 'reclutador'
+        CheckConstraint("rol IN ('usuario','reclutador','agente_soporte','admin')", name="ck_usuarios_rol"),
+        CheckConstraint("rol <> 'reclutador' OR empresa_id IS NOT NULL", name="ck_usuarios_reclutador_empresa"),
+        Index("idx_usuarios_empresa", "empresa_id"),
     )
 
     id = Column(Integer, primary_key=True)
@@ -20,11 +23,13 @@ class Usuario(Base):
     password_hash = Column(String(255))  # NULL si el usuario solo entra por OAuth
     telefono = Column(String(20))
     rol = Column(String(20), nullable=False, server_default="usuario")
+    empresa_id = Column(Integer, ForeignKey("empresas.id"))  # v4: solo para reclutadores
     email_verificado = Column(Boolean, nullable=False, server_default="false")
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
     deleted_at = Column(DateTime)  # soft delete
 
+    empresa = relationship("Empresa", back_populates="reclutadores")
     identidades_oauth = relationship("IdentidadOAuth", back_populates="usuario", cascade="all, delete-orphan")
     tokens_verificacion = relationship("TokenVerificacionEmail", back_populates="usuario", cascade="all, delete-orphan")
     tokens_recuperacion = relationship("TokenRecuperacion", back_populates="usuario", cascade="all, delete-orphan")
