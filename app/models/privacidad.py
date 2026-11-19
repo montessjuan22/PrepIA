@@ -9,7 +9,10 @@ class HistorialConsentimiento(Base):
     """Append-only: nunca se hace UPDATE, cada cambio es una fila nueva."""
     __tablename__ = "historial_consentimientos"
     __table_args__ = (
-        CheckConstraint("tipo IN ('marketing','analiticas','terceros')", name="ck_historial_consentimientos_tipo"),
+        CheckConstraint(
+            "tipo IN ('marketing','analiticas','terceros','grabacion','compartir_empresa')",
+            name="ck_historial_consentimientos_tipo",
+        ),
         Index("idx_historial_consentimientos_usuario_tipo", "usuario_id", "tipo"),
     )
 

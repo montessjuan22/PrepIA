@@ -7,8 +7,11 @@ from app.models.usuarios import (  # noqa: F401
     IdentidadOAuth, SesionAuth, TokenRecuperacion, TokenVerificacionEmail, Usuario,
 )
 from app.models.ejercicios import (  # noqa: F401
-    CasoPrueba, Ejercicio, LenguajeProgramacion, NivelDificultad, Pista, Tema,
-    ejercicio_lenguajes, ejercicio_temas,
+    CasoPrueba, Ejercicio, LenguajeProgramacion, NivelDificultad, OpcionPregunta,
+    PerfilProfesional, Pista, Tema, ejercicio_lenguajes, ejercicio_temas,
+)
+from app.models.seleccion import (  # noqa: F401
+    AnalisisCV, DecisionPostulacion, Empresa, HojaDeVida, Postulacion, Vacante, VacanteEjercicio,
 )
 from app.models.sesiones import RespuestaSesion, ResultadoEjecucion, SesionPrueba  # noqa: F401
 from app.models.retroalimentacion import (  # noqa: F401
