@@ -113,14 +113,32 @@ export function Navbar({ hideAuthButtons = false }: { hideAuthButtons?: boolean 
                 </LinkButton>
 
                 {currentUser.rol === "admin" && currentUser.es_admin_principal ? (
-                  <LinkButton
-                    to="/dashboard/support"
-                    variant="outline"
-                    className="border-cyan-300 dark:border-cyan-800 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-50 dark:hover:bg-cyan-950/30 text-xs h-9 px-3 gap-1.5 rounded-lg flex items-center"
-                    title="Mesa de Soporte (permisos de Superadmin)"
-                  >
-                    <Headphones className="w-3.5 h-3.5" /> Soporte
-                  </LinkButton>
+                  <>
+                    <LinkButton
+                      to="/dashboard/company"
+                      variant="outline"
+                      className="border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 text-xs h-9 px-2.5 gap-1 rounded-lg flex items-center"
+                      title="Panel de Empresa y Vacantes (permisos de Superadmin)"
+                    >
+                      <Building2 className="w-3.5 h-3.5" /> Empresa
+                    </LinkButton>
+                    <LinkButton
+                      to="/dashboard/support"
+                      variant="outline"
+                      className="border-cyan-300 dark:border-cyan-800 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-50 dark:hover:bg-cyan-950/30 text-xs h-9 px-2.5 gap-1 rounded-lg flex items-center"
+                      title="Mesa de Soporte (permisos de Superadmin)"
+                    >
+                      <Headphones className="w-3.5 h-3.5" /> Soporte
+                    </LinkButton>
+                    <LinkButton
+                      to="/dashboard/candidate"
+                      variant="outline"
+                      className="border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-xs h-9 px-2.5 gap-1 rounded-lg flex items-center"
+                      title="Vista Candidato y Empleos"
+                    >
+                      <User className="w-3.5 h-3.5" /> Candidato
+                    </LinkButton>
+                  </>
                 ) : currentUser.rol !== "agente_soporte" ? (
                   <Button
                     variant="outline"

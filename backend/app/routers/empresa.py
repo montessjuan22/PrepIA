@@ -56,11 +56,33 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _resolve_empresa(usuario: Usuario, db: Session) -> Optional[Empresa]:
+def _resolve_empresa(usuario: Usuario, db: Session, empresa_id: Optional[int] = None) -> Optional[Empresa]:
+    if usuario.rol == "admin":
+        if empresa_id is not None:
+            emp = db.query(Empresa).filter(Empresa.id == empresa_id).first()
+            if not emp:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "La empresa seleccionada no existe.")
+            return emp
+        if usuario.empresa_id:
+            emp = db.query(Empresa).filter(Empresa.id == usuario.empresa_id).first()
+            if emp:
+                return emp
+        first_emp = db.query(Empresa).order_by(Empresa.id.asc()).first()
+        if first_emp:
+            return first_emp
+        auto_emp = Empresa(
+            nombre="PrepIA Corporativo",
+            razon_social="PrepIA Corporativo S.A.S.",
+            nombre_comercial="PrepIA Corporativo",
+            sector="Tecnología y Software",
+            activa=True,
+        )
+        db.add(auto_emp)
+        db.commit()
+        db.refresh(auto_emp)
+        return auto_emp
     if usuario.empresa_id:
         return db.query(Empresa).filter(Empresa.id == usuario.empresa_id).first()
-    if usuario.rol == "admin":
-        return db.query(Empresa).order_by(Empresa.id.asc()).first()
     return None
 
 
@@ -305,11 +327,12 @@ def _serialize_company_applicant(p: Postulacion, extra_map: Dict[int, Dict[str, 
 
 @router.get("/overview")
 def get_company_overview(
+    empresa_id: Optional[int] = None,
     usuario: Usuario = Depends(require_roles("reclutador", "admin")),
     db: Session = Depends(get_db),
 ):
     """Retorna datos reales de la empresa, vacantes, postulantes rankeados por IA y buscador de talento."""
-    empresa = _resolve_empresa(usuario, db)
+    empresa = _resolve_empresa(usuario, db, empresa_id=empresa_id)
     if not empresa:
         return {
             "empresa": None,
@@ -323,6 +346,7 @@ def get_company_overview(
             "vacancies": [],
             "applicants": [],
             "talents": [],
+            "empresas_disponibles": [],
         }
 
     vacancies = (
@@ -365,6 +389,15 @@ def get_company_overview(
     # Ranking por defecto de mayor a menor afinidad IA (Gemini)
     applicants.sort(key=lambda item: (item["cv_score"] if item["cv_score"] is not None else -1.0, item["id"]), reverse=True)
 
+    empresas_disponibles = (
+        [
+            {"id": e.id, "nombre": e.nombre_comercial or e.nombre, "sector": e.sector}
+            for e in db.query(Empresa).filter(Empresa.activa.is_(True)).order_by(Empresa.nombre.asc()).all()
+        ]
+        if usuario.rol == "admin"
+        else []
+    )
+
     return {
         "empresa": serialize_company_profile(empresa),
         "stats": {
@@ -377,6 +410,7 @@ def get_company_overview(
         "vacancies": [_serialize_company_vacancy(v, post_counts.get(v.id, 0)) for v in vacancies],
         "applicants": applicants,
         "talents": _load_available_talents(db, empresa.id),
+        "empresas_disponibles": empresas_disponibles,
     }
 
 
@@ -808,9 +842,13 @@ def notify_candidate_interest(
 
     vacante = None
     if data.vacante_id is not None:
-        vacante = db.query(Vacante).filter(Vacante.id == data.vacante_id, Vacante.empresa_id == empresa.id).first()
+        vac_q = db.query(Vacante).filter(Vacante.id == data.vacante_id)
+        if usuario.rol != "admin":
+            vac_q = vac_q.filter(Vacante.empresa_id == empresa.id)
+        vacante = vac_q.first()
         if not vacante:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "La vacante seleccionada no pertenece a tu empresa.")
+        empresa = vacante.empresa or empresa
 
     emp_nombre = empresa.nombre_comercial or empresa.nombre
     if data.tipo == "invitacion_entrevista":
@@ -857,18 +895,24 @@ def create_company_vacancy(
     usuario: Usuario = Depends(require_roles("reclutador", "admin")),
     db: Session = Depends(get_db),
 ):
-    """Crea una vacante flexible en PostgreSQL en estado 'pendiente_aprobacion' hasta aprobación admin."""
-    empresa = _resolve_empresa(usuario, db)
+    """Crea una vacante flexible en PostgreSQL.
+
+    Los reclutadores la envían en 'pendiente_aprobacion'; el Superadmin la publica directamente como 'abierta'.
+    """
+    empresa = _resolve_empresa(usuario, db, empresa_id=data.empresa_id)
     if not empresa:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Tu cuenta no tiene una empresa asociada para publicar vacantes.",
         )
 
+    is_superadmin = usuario.rol == "admin" and bool(usuario.es_admin_principal)
     nueva = Vacante(
         empresa_id=empresa.id,
         reclutador_id=usuario.id,
-        estado="pendiente_aprobacion",
+        estado="abierta" if is_superadmin else "pendiente_aprobacion",
+        aprobado_por_id=usuario.id if is_superadmin else None,
+        fecha_aprobacion=_utcnow() if is_superadmin else None,
     )
     _apply_vacancy_payload(nueva, data)
     db.add(nueva)
@@ -877,7 +921,11 @@ def create_company_vacancy(
 
     return {
         "status": "ok",
-        "mensaje": "Vacante enviada para aprobación del administrador. Se publicará cuando sea aprobada.",
+        "mensaje": (
+            f"Vacante publicada y aprobada directamente por el Superadmin en {empresa.nombre_comercial or empresa.nombre}."
+            if is_superadmin
+            else "Vacante enviada para aprobación del administrador. Se publicará cuando sea aprobada."
+        ),
         "vacancy": _serialize_company_vacancy(nueva, 0),
     }
 
@@ -1093,7 +1141,10 @@ def evaluate_talent_match_with_ai(
     if not empresa:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Tu cuenta no tiene una empresa asociada.")
 
-    vacante = db.query(Vacante).filter(Vacante.id == data.vacante_id, Vacante.empresa_id == empresa.id).first()
+    vac_q = db.query(Vacante).filter(Vacante.id == data.vacante_id)
+    if usuario.rol != "admin":
+        vac_q = vac_q.filter(Vacante.empresa_id == empresa.id)
+    vacante = vac_q.first()
     if not vacante:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "La vacante seleccionada no pertenece a tu empresa.")
 

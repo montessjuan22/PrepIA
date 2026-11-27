@@ -1,7 +1,8 @@
 """Router de administración conectado a PostgreSQL: usuarios reales, métricas y gestión de roles."""
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, Optional
+import re
+from typing import Dict, List, Literal, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -15,6 +16,7 @@ from app.core.deps import require_roles
 from app.models.ejercicios import Ejercicio, PerfilProfesional, RecursoPreparacion
 from app.models.seleccion import DecisionPostulacion, Empresa, HojaDeVida, Postulacion, Vacante
 from app.models.sesiones import SesionPrueba
+from app.models.soporte import TicketSoporte
 from app.models.usuarios import SesionAuth, Usuario
 from app.services import cv_service
 
@@ -705,3 +707,422 @@ def delete_preparation_resource(
     db.delete(recurso)
     db.commit()
     return {"status": "ok", "deleted_recurso_id": recurso_id}
+
+
+# =========================================================================
+# SUPERADMIN / ADMIN: CHATBOT ABIERTO CON CONTROLES Y ANALIZADOR DE CVs
+# =========================================================================
+
+
+class AdminChatRequest(BaseModel):
+    mensaje: str = Field(min_length=1, max_length=6000)
+    historial: Optional[List[Dict[str, str]]] = None
+    cv_texto: Optional[str] = None
+    candidato_id: Optional[int] = None
+
+
+class AdminTextCVRequest(BaseModel):
+    texto_cv: str = Field(min_length=20, max_length=20000)
+    nombre_archivo: Optional[str] = "HojaDeVida_Admin.txt"
+    vacante_id: Optional[int] = None
+
+
+def _build_admin_cv_match_response(
+    db: Session,
+    cv_text: str,
+    filename: str,
+    vacante_id: Optional[int] = None,
+    candidate_user: Optional[Usuario] = None,
+) -> dict:
+    analysis = cv_service.analyze_cv_content(cv_text, filename)
+
+    vac_query = db.query(Vacante).options(joinedload(Vacante.empresa))
+    if vacante_id is not None:
+        vac_rows = vac_query.filter(Vacante.id == vacante_id).all()
+    else:
+        vac_rows = vac_query.filter(Vacante.estado == "abierta").order_by(Vacante.id.desc()).all()
+
+    vacancies_list = [
+        {
+            "id": v.id,
+            "titulo": v.titulo,
+            "empresa": v.empresa.nombre if v.empresa else "Empresa",
+            "sector": v.empresa.sector if v.empresa else "",
+            "modalidad": v.modalidad or "remoto",
+            "requisitos_raw": v.requisitos or "",
+            "requisitos": [l.strip() for l in (v.requisitos or "").splitlines() if l.strip()],
+            "puntaje_minimo": float(v.puntaje_minimo or 60.0),
+            "estado": v.estado,
+        }
+        for v in vac_rows
+    ]
+    vacantes_match = cv_service.build_real_vacancy_matches(cv_text, vacancies_list)
+
+    return {
+        "status": "ok",
+        "candidato": (
+            {
+                "id": candidate_user.id,
+                "nombre": candidate_user.nombre or candidate_user.email.split("@")[0],
+                "email": candidate_user.email,
+                "rol": candidate_user.rol,
+            }
+            if candidate_user
+            else None
+        ),
+        "analisis": analysis,
+        "vacantes_match": vacantes_match,
+        "cv_texto_preview": cv_text[:2000],
+    }
+
+
+@router.post("/cv/analizar-archivo")
+async def admin_analyze_cv_file(
+    file: UploadFile = File(...),
+    vacante_id: Optional[int] = Form(None),
+    _admin: Usuario = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+):
+    """Permite al Admin/Superadmin subir y analizar cualquier Hoja de Vida (PDF, DOCX, TXT) contra vacantes."""
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El archivo subido está vacío.")
+    safe_filename = (file.filename or "HojaDeVida.pdf").replace("\x00", "")[:255]
+    extracted = cv_service.extract_text_from_file_bytes(contents, safe_filename).replace("\x00", "")
+    if not extracted or len(extracted.strip()) < 20:
+        extracted = f"Hoja de Vida {safe_filename} (sin texto seleccionable suficiente; requiere revisión visual)."
+
+    return _build_admin_cv_match_response(db, extracted, safe_filename, vacante_id=vacante_id)
+
+
+@router.post("/cv/analizar-texto")
+def admin_analyze_cv_text(
+    data: AdminTextCVRequest,
+    _admin: Usuario = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+):
+    """Permite al Admin/Superadmin pegar y analizar texto de cualquier Hoja de Vida contra vacantes."""
+    clean_text = data.texto_cv.replace("\x00", "").strip()
+    return _build_admin_cv_match_response(
+        db,
+        clean_text,
+        data.nombre_archivo or "HojaDeVida_Admin.txt",
+        vacante_id=data.vacante_id,
+    )
+
+
+@router.get("/candidatos/{user_id}/cv-analisis")
+def admin_audit_candidate_cv(
+    user_id: int,
+    vacante_id: Optional[int] = None,
+    _admin: Usuario = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+):
+    """Audita en 1 clic la última Hoja de Vida registrada en BD de cualquier usuario."""
+    user = db.query(Usuario).filter(Usuario.id == user_id).first()
+    if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Usuario no encontrado.")
+    hv = (
+        db.query(HojaDeVida)
+        .filter(HojaDeVida.usuario_id == user.id)
+        .order_by(HojaDeVida.created_at.desc(), HojaDeVida.id.desc())
+        .first()
+    )
+    if not hv or not hv.texto_extraido:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Este usuario aún no tiene Hoja de Vida analizable en BD.")
+    return _build_admin_cv_match_response(
+        db,
+        hv.texto_extraido,
+        hv.nombre_archivo,
+        vacante_id=vacante_id,
+        candidate_user=user,
+    )
+
+
+def _try_execute_admin_chat_action(
+    db: Session,
+    admin_actual: Usuario,
+    mensaje: str,
+) -> Optional[Dict[str, str]]:
+    """Ejecuta controles administrativos seguros solicitados en lenguaje natural por Admin/Superadmin."""
+    msg = mensaje.strip()
+    low = msg.lower()
+
+    # 1) Aprobar todas las vacantes pendientes
+    if re.search(r"aprobar\s+todas\s+(las\s+)?(vacantes\s+)?pendientes", low):
+        pendientes = db.query(Vacante).filter(Vacante.estado == "pendiente_aprobacion").all()
+        if not pendientes:
+            return {"accion": "ninguna", "respuesta": "No hay vacantes pendientes de aprobación en este momento."}
+        for v in pendientes:
+            v.estado = "abierta"
+            v.motivo_rechazo = None
+            v.aprobado_por_id = admin_actual.id
+            v.fecha_aprobacion = _utcnow()
+        db.commit()
+        titulos = ", ".join(f"#{v.id} {v.titulo}" for v in pendientes)
+        return {
+            "accion": "aprobar_vacantes",
+            "respuesta": f"✅ **Acción ejecutada:** Se aprobaron y publicaron **{len(pendientes)}** vacantes pendientes: {titulos}.",
+        }
+
+    # 2) Aprobar vacante específica por ID
+    m_app = re.search(r"(?:aprobar|aprueba)\s+(?:la\s+)?vacante\s*#?(\d+)", low)
+    if m_app:
+        vac_id = int(m_app.group(1))
+        vac = db.query(Vacante).filter(Vacante.id == vac_id).first()
+        if not vac:
+            return {"accion": "error", "respuesta": f"❌ No encontré ninguna vacante con ID **#{vac_id}**."}
+        vac.estado = "abierta"
+        vac.motivo_rechazo = None
+        vac.aprobado_por_id = admin_actual.id
+        vac.fecha_aprobacion = _utcnow()
+        db.commit()
+        return {
+            "accion": "aprobar_vacante",
+            "respuesta": f"✅ **Vacante #{vac.id} ({vac.titulo})** aprobada y publicada en el portal.",
+        }
+
+    # 3) Rechazar vacante específica por ID
+    m_rej = re.search(r"(?:rechazar|rechaza)\s+(?:la\s+)?vacante\s*#?(\d+)(?:\s*(?:motivo|por|:)\s*(.+))?", msg, re.IGNORECASE)
+    if m_rej:
+        vac_id = int(m_rej.group(1))
+        motivo = (m_rej.group(2) or "").strip() or "Rechazada desde Asistente Admin."
+        vac = db.query(Vacante).filter(Vacante.id == vac_id).first()
+        if not vac:
+            return {"accion": "error", "respuesta": f"❌ No encontré ninguna vacante con ID **#{vac_id}**."}
+        vac.estado = "rechazada"
+        vac.motivo_rechazo = motivo
+        vac.aprobado_por_id = admin_actual.id
+        vac.fecha_aprobacion = _utcnow()
+        db.commit()
+        return {
+            "accion": "rechazar_vacante",
+            "respuesta": f"⚠️ **Vacante #{vac.id} ({vac.titulo})** rechazada. Motivo: *{motivo}*.",
+        }
+
+    # 4) Asignar rol de soporte o empresa por correo en chat (ej: "dar soporte a correo@x.com")
+    m_role = re.search(
+        r"(?:dar|asignar)\s+(?:rol\s+(?:de\s+)?)?(soporte|agente_soporte|empresa|reclutador|candidato|usuario|admin)\s+a\s+([^\s,;]+)",
+        low,
+    )
+    if m_role:
+        raw_role = m_role.group(1)
+        target_ref = m_role.group(2).strip()
+        role_map = {
+            "soporte": "agente_soporte",
+            "agente_soporte": "agente_soporte",
+            "empresa": "reclutador",
+            "reclutador": "reclutador",
+            "candidato": "usuario",
+            "usuario": "usuario",
+            "admin": "admin",
+        }
+        new_role = role_map[raw_role]
+        target = (
+            db.query(Usuario).filter(Usuario.id == int(target_ref)).first()
+            if target_ref.isdigit()
+            else db.query(Usuario).filter(func.lower(Usuario.email) == target_ref.lower()).first()
+        )
+        if not target:
+            return {"accion": "error", "respuesta": f"❌ No encontré ningún usuario con referencia `{target_ref}`."}
+        if target.id == admin_actual.id or target.es_admin_principal:
+            return {"accion": "error", "respuesta": "🔒 El Administrador Principal y tu propia sesión están protegidos contra cambios de rol."}
+        if (new_role == "admin" or target.rol == "admin") and not admin_actual.es_admin_principal:
+            return {"accion": "error", "respuesta": "🔒 Solo el Administrador Principal puede asignar o quitar el rol de Administrador."}
+
+        if new_role == "reclutador" and not target.empresa_id:
+            emp_name = f"Empresa de {target.nombre or target.email.split('@')[0]}"[:150]
+            emp = db.query(Empresa).filter(func.lower(Empresa.nombre) == emp_name.lower()).first()
+            if not emp:
+                emp = Empresa(nombre=emp_name, sector="Empresarial", activa=True)
+                db.add(emp)
+                db.flush()
+            target.empresa_id = emp.id
+        elif new_role != "reclutador":
+            target.empresa_id = None
+
+        target.rol = new_role
+        if new_role != "admin":
+            target.es_admin_principal = False
+        db.commit()
+        return {
+            "accion": "cambio_rol",
+            "respuesta": f"✅ **Rol actualizado:** `{target.email}` ahora tiene el rol **{new_role}**.",
+        }
+
+    return None
+
+
+@router.post("/chat")
+def admin_open_chatbot(
+    data: AdminChatRequest,
+    admin_actual: Usuario = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+):
+    """Chatbot IA abierto para Superadmin/Admin con controles directos en BD y auditoría de Hojas de Vida."""
+    _ensure_primary_admin(db)
+    db.refresh(admin_actual)
+
+    action_result = _try_execute_admin_chat_action(db, admin_actual, data.mensaje)
+    if action_result:
+        return {
+            "status": "ok",
+            "respuesta": action_result["respuesta"],
+            "fuente": "control_admin_postgresql",
+            "tipo_consulta": "accion_admin",
+            "accion_ejecutada": action_result["accion"],
+        }
+
+    # Auditar CV si viene candidato_id, cv_texto, o si pregunta por el CV de alguien ("analiza el cv de ...")
+    cv_audit_payload = None
+    if data.cv_texto and len(data.cv_texto.strip()) >= 20:
+        cv_audit_payload = _build_admin_cv_match_response(db, data.cv_texto.strip(), "CV_Pegado_Admin.txt")
+    elif data.candidato_id is not None:
+        user_target = db.query(Usuario).filter(Usuario.id == data.candidato_id).first()
+        if user_target:
+            hv = (
+                db.query(HojaDeVida)
+                .filter(HojaDeVida.usuario_id == user_target.id)
+                .order_by(HojaDeVida.created_at.desc(), HojaDeVida.id.desc())
+                .first()
+            )
+            if hv and hv.texto_extraido:
+                cv_audit_payload = _build_admin_cv_match_response(
+                    db, hv.texto_extraido, hv.nombre_archivo, candidate_user=user_target
+                )
+                cv_audit_payload["nombre"] = user_target.nombre or user_target.email
+    else:
+        m_cv = re.search(r"(?:cv|hoja\s+de\s+vida)\s+de\s+([a-zA-Z0-9áéíóúñÁÉÍÓÚÑ@._-]+)", data.mensaje, re.IGNORECASE)
+        if m_cv:
+            needle = m_cv.group(1).strip().lower()
+            matched_user = (
+                db.query(Usuario)
+                .filter(
+                    (func.lower(Usuario.email).contains(needle)) | (func.lower(Usuario.nombre).contains(needle))
+                )
+                .first()
+            )
+            if matched_user:
+                hv = (
+                    db.query(HojaDeVida)
+                    .filter(HojaDeVida.usuario_id == matched_user.id)
+                    .order_by(HojaDeVida.created_at.desc(), HojaDeVida.id.desc())
+                    .first()
+                )
+                if hv and hv.texto_extraido:
+                    cv_audit_payload = _build_admin_cv_match_response(
+                        db, hv.texto_extraido, hv.nombre_archivo, candidate_user=matched_user
+                    )
+                    cv_audit_payload["nombre"] = matched_user.nombre or matched_user.email
+
+    users = db.query(Usuario).order_by(Usuario.id.asc()).all()
+    active_users = [u for u in users if u.deleted_at is None]
+    vacantes = db.query(Vacante).options(joinedload(Vacante.empresa)).order_by(Vacante.id.desc()).all()
+    vac_post_counts = dict(db.query(Postulacion.vacante_id, func.count(Postulacion.id)).group_by(Postulacion.vacante_id).all())
+    tickets = db.query(TicketSoporte).options(joinedload(TicketSoporte.usuario)).order_by(TicketSoporte.id.desc()).all()
+    empresas = db.query(Empresa).order_by(Empresa.id.asc()).all()
+    emp_vac_counts = dict(db.query(Vacante.empresa_id, func.count(Vacante.id)).group_by(Vacante.empresa_id).all())
+    emp_rec_counts = dict(
+        db.query(Usuario.empresa_id, func.count(Usuario.id))
+        .filter(Usuario.empresa_id.is_not(None), Usuario.deleted_at.is_(None))
+        .group_by(Usuario.empresa_id)
+        .all()
+    )
+
+    cvs = db.query(HojaDeVida).order_by(HojaDeVida.created_at.desc(), HojaDeVida.id.desc()).all()
+    latest_cv = {}
+    for c in cvs:
+        if c.usuario_id not in latest_cv:
+            latest_cv[c.usuario_id] = c
+
+    admin_context = {
+        "admin": {
+            "id": admin_actual.id,
+            "nombre": admin_actual.nombre or admin_actual.email,
+            "email": admin_actual.email,
+            "es_admin_principal": bool(admin_actual.es_admin_principal),
+        },
+        "stats": {
+            "total_users": len(users),
+            "candidates": sum(1 for u in active_users if u.rol == "usuario"),
+            "companies": sum(1 for u in active_users if u.rol == "reclutador"),
+            "admins": sum(1 for u in active_users if u.rol == "admin"),
+            "support_agents": sum(1 for u in active_users if u.rol == "agente_soporte"),
+            "total_jobs": len(vacantes),
+            "active_jobs": sum(1 for v in vacantes if v.estado == "abierta"),
+            "pending_jobs": sum(1 for v in vacantes if v.estado == "pendiente_aprobacion"),
+            "total_applications": db.query(Postulacion).count(),
+            "total_cvs": len(cvs),
+            "tickets_pendientes": sum(1 for t in tickets if t.estado == "pendiente"),
+            "tickets_en_proceso": sum(1 for t in tickets if t.estado == "en_proceso"),
+            "tickets_resueltos": sum(1 for t in tickets if t.estado in ("resuelto", "cerrado")),
+        },
+        "vacantes_pendientes": [
+            {
+                "id": v.id,
+                "titulo": v.titulo,
+                "empresa": v.empresa.nombre if v.empresa else "Empresa",
+                "ciudad": v.ciudad or "Colombia",
+                "salario": v.salario or "A convenir",
+            }
+            for v in vacantes
+            if v.estado == "pendiente_aprobacion"
+        ],
+        "vacantes_abiertas": [
+            {
+                "id": v.id,
+                "titulo": v.titulo,
+                "empresa": v.empresa.nombre if v.empresa else "Empresa",
+                "total_postulados": vac_post_counts.get(v.id, 0),
+            }
+            for v in vacantes
+            if v.estado == "abierta"
+        ][:10],
+        "tickets_soporte": [
+            {
+                "codigo": t.codigo,
+                "asunto": t.asunto,
+                "estado": t.estado,
+                "prioridad": t.prioridad or "media",
+                "usuario": (t.usuario.nombre or t.usuario.email) if t.usuario else "Usuario",
+            }
+            for t in tickets[:10]
+        ],
+        "empresas": [
+            {
+                "id": e.id,
+                "nombre": e.nombre_comercial or e.nombre,
+                "sector": e.sector,
+                "vacantes_count": emp_vac_counts.get(e.id, 0),
+                "reclutadores_count": emp_rec_counts.get(e.id, 0),
+            }
+            for e in empresas
+        ],
+        "candidatos_con_cv": [
+            {
+                "id": u.id,
+                "nombre": u.nombre or u.email.split("@")[0],
+                "email": u.email,
+                "cv_nombre": latest_cv[u.id].nombre_archivo,
+                "cv_score": cv_service.analyze_cv_content(
+                    latest_cv[u.id].texto_extraido or "", latest_cv[u.id].nombre_archivo
+                )["score"],
+            }
+            for u in active_users
+            if u.id in latest_cv
+        ],
+        "cv_audit": cv_audit_payload,
+    }
+
+    res = cv_service.generate_admin_chat_response(
+        user_message=data.mensaje,
+        admin_context=admin_context,
+        history=data.historial,
+    )
+    return {
+        "status": "ok",
+        "respuesta": res["respuesta"],
+        "fuente": res.get("fuente", "postgresql_admin"),
+        "tipo_consulta": res.get("tipo_consulta", "admin"),
+        "accion_ejecutada": None,
+    }

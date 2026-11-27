@@ -1170,6 +1170,7 @@ export interface CompanyVacancyPayload {
   idiomas: VacancyIdioma[];
   preguntas_filtro?: VacancyPreguntaFiltro[];
   puntaje_minimo?: number;
+  empresa_id?: number | null;
 }
 
 export interface CompanyApplicantItem {
@@ -1240,10 +1241,12 @@ export interface CompanyOverviewResponse {
   vacancies: CompanyVacancyItem[];
   applicants: CompanyApplicantItem[];
   talents: CompanyTalentItem[];
+  empresas_disponibles?: { id: number; nombre: string; sector?: string | null }[];
 }
 
-export async function apiGetCompanyOverview(): Promise<CompanyOverviewResponse> {
-  const res = await authFetch('/empresa/overview');
+export async function apiGetCompanyOverview(empresaId?: number | null): Promise<CompanyOverviewResponse> {
+  const qs = empresaId ? `?empresa_id=${encodeURIComponent(String(empresaId))}` : '';
+  const res = await authFetch(`/empresa/overview${qs}`);
   if (!res.ok) {
     throw new Error(await parseErrorDetail(res, 'No se pudo cargar la información de la empresa.'));
   }
@@ -1715,4 +1718,109 @@ export async function apiReplySupportTicket(
   }
   const data = await res.json();
   return data.ticket;
+}
+
+// ==========================================
+// SUPERADMIN / ADMIN: CHATBOT ABIERTO Y ANALIZADOR DE CVs
+// ==========================================
+
+export interface AdminCVAnalysisResult {
+  status: string;
+  candidato: { id: number; nombre: string; email: string; rol: string } | null;
+  analisis: {
+    score: number;
+    es_apto: boolean;
+    nivel_aptitud: string;
+    nombre_archivo: string;
+    habilidades_detectadas: string[];
+    categorias_detectadas: Record<string, string[]>;
+    elementos_faltantes: string[];
+    puntos_fuertes: string[];
+    total_palabras: number;
+  };
+  vacantes_match: {
+    id: number;
+    titulo: string;
+    empresa: string;
+    modalidad: string;
+    match: number;
+    puntaje_minimo: number;
+    requisitos_cumplidos: string[];
+    requisitos_faltantes: string[];
+  }[];
+  cv_texto_preview: string;
+}
+
+export async function apiAdminChat(payload: {
+  mensaje: string;
+  historial?: { sender: string; text: string }[];
+  cv_texto?: string;
+  candidato_id?: number | null;
+}): Promise<{
+  status: string;
+  respuesta: string;
+  fuente: string;
+  tipo_consulta: string;
+  accion_ejecutada: string | null;
+}> {
+  const res = await authFetch('/admin/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorDetail(res, 'No se pudo consultar el asistente de administración.'));
+  }
+  return await res.json();
+}
+
+export async function apiAdminAnalyzeCVFile(
+  file: File,
+  vacanteId?: number | null
+): Promise<AdminCVAnalysisResult> {
+  const fd = new FormData();
+  fd.append('file', file);
+  if (vacanteId) {
+    fd.append('vacante_id', String(vacanteId));
+  }
+  const res = await authFetch('/admin/cv/analizar-archivo', {
+    method: 'POST',
+    body: fd,
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorDetail(res, 'No se pudo analizar el archivo de Hoja de Vida.'));
+  }
+  return await res.json();
+}
+
+export async function apiAdminAnalyzeCVText(
+  textoCv: string,
+  vacanteId?: number | null,
+  nombreArchivo = 'HojaDeVida_Admin.txt'
+): Promise<AdminCVAnalysisResult> {
+  const res = await authFetch('/admin/cv/analizar-texto', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      texto_cv: textoCv,
+      nombre_archivo: nombreArchivo,
+      vacante_id: vacanteId ?? null,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorDetail(res, 'No se pudo analizar el texto de la Hoja de Vida.'));
+  }
+  return await res.json();
+}
+
+export async function apiAdminAuditCandidateCV(
+  userId: number,
+  vacanteId?: number | null
+): Promise<AdminCVAnalysisResult> {
+  const qs = vacanteId ? `?vacante_id=${encodeURIComponent(String(vacanteId))}` : '';
+  const res = await authFetch(`/admin/candidatos/${userId}/cv-analisis${qs}`);
+  if (!res.ok) {
+    throw new Error(await parseErrorDetail(res, 'No se pudo auditar la Hoja de Vida del usuario.'));
+  }
+  return await res.json();
 }

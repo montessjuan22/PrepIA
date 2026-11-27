@@ -292,9 +292,10 @@ def _call_external_llm_if_configured(
     except Exception:
         return None
 
-    system_prompt = (
+    system_prompt = context_payload.get("_system_prompt") or (
         "Eres el Asistente IA de PrepIA. Responde siempre en español, de forma natural, conversacional, clara y accionable, "
-        "usando los datos reales de PostgreSQL incluidos en el contexto JSON. "
+        "usando los datos reales de PostgreSQL incluidos en el contexto JSON cuando la consulta trate sobre la plataforma, "
+        "y ayudando libremente en temas de hojas de vida, entrevistas, desarrollo profesional y uso de PrepIA. "
         "No inventes empresas, puntajes ni postulaciones que no estén en el contexto. "
         "Si falta algún dato (ej. no ha subido CV, no tiene teléfono o no tiene postulaciones), indícalo con exactitud. "
         "Evita repetir plantillas rígidas; responde directamente a lo que el usuario pregunta.\n\n"
@@ -700,5 +701,134 @@ def evaluate_cv_for_vacancy(
         "consejos_vacante": consejos,
         "total_requisitos": total_reqs
     }
+
+
+def generate_admin_chat_response(
+    user_message: str,
+    admin_context: Dict[str, Any],
+    history: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    """Copiloto IA abierto para Superadmin/Admin con acceso a estadísticas, vacantes, tickets, roles y análisis de CV."""
+    admin_info = admin_context.get("admin") or {}
+    is_super = bool(admin_info.get("es_admin_principal"))
+    stats = admin_context.get("stats") or {}
+    pendientes = admin_context.get("vacantes_pendientes") or []
+    abiertas = admin_context.get("vacantes_abiertas") or []
+    tickets = admin_context.get("tickets_soporte") or []
+    empresas = admin_context.get("empresas") or []
+    candidatos_cv = admin_context.get("candidatos_con_cv") or []
+    cv_audit = admin_context.get("cv_audit")
+
+    llm_prompt = (
+        "Eres el Copiloto IA de Superadministración de PrepIA. Asistes al Administrador Principal (Superadmin) "
+        "o Administrador con una visión abierta y completa de la plataforma en PostgreSQL: usuarios, roles "
+        "(candidatos, empresas, agentes de soporte, admins), vacantes (abiertas y pendientes de aprobación), "
+        "postulaciones, tickets de soporte técnico y análisis de Hojas de Vida.\n"
+        "Responde en español, de forma directa, estratégica y sin plantillas rígidas. "
+        "Puedes responder preguntas abiertas de gestión, talento humano, tecnología, redacción de vacantes, "
+        "auditoría de Hojas de Vida o explicar qué acciones directas puedes ejecutar aquí mismo "
+        "(por ejemplo: 'aprobar vacante <ID>', 'aprobar todas las pendientes', 'dar soporte a <correo>', "
+        "'dar empresa a <correo>', 'analiza el cv de <nombre/correo>').\n"
+        "No inventes cifras fuera del contexto JSON.\n\n"
+        f"CONTEXTO REAL DE ADMINISTRACIÓN (POSTGRESQL):\n{json.dumps(admin_context, ensure_ascii=False, default=str)}"
+    )
+    llm_payload = {**admin_context, "_system_prompt": llm_prompt}
+    llm_answer = _call_external_llm_if_configured(user_message, llm_payload, history)
+    if llm_answer:
+        return {"respuesta": llm_answer, "fuente": "llm+postgresql_admin", "tipo_consulta": "admin_ia"}
+
+    msg = user_message.lower().strip()
+
+    if cv_audit:
+        cv_res = cv_audit.get("analisis") or {}
+        top_matches = cv_audit.get("vacantes_match") or []
+        resp = (
+            f"📄 **Auditoría de Hoja de Vida — {cv_audit.get('nombre', 'CV Analizado')}**\n"
+            f"• **Archivo:** {cv_res.get('nombre_archivo', 'Documento')}\n"
+            f"• **Puntaje general:** **{cv_res.get('score', 0)}/100** (*{cv_res.get('nivel_aptitud', 'Evaluado')}*)\n"
+            f"• **Habilidades detectadas ({len(cv_res.get('habilidades_detectadas', []))}):** "
+            f"{', '.join(cv_res.get('habilidades_detectadas', [])[:10]) or 'Ninguna detectada'}\n"
+        )
+        faltantes = cv_res.get("elementos_faltantes") or []
+        if faltantes:
+            resp += "• **Brechas / mejoras:** " + "; ".join(faltantes[:3]) + "\n"
+        if top_matches:
+            resp += "\n🎯 **Mejores vacantes compatibles en BD:**\n"
+            for m in top_matches[:3]:
+                resp += f"• **{m['titulo']}** ({m['empresa']}) → **{m['match']}% match**\n"
+        return {"respuesta": resp, "fuente": "postgresql_admin", "tipo_consulta": "admin_cv_audit"}
+
+    if any(k in msg for k in ["pendiente", "aprobar", "aprobacion", "aprobación", "empleos", "vacante"]):
+        if not pendientes and "abierta" not in msg:
+            resp = (
+                f"💼 **Estado de Vacantes en PostgreSQL:**\n"
+                f"• **Pendientes de aprobación:** 0\n"
+                f"• **Abiertas y publicadas:** {len(abiertas)} (total en BD: {stats.get('total_jobs', 0)})\n\n"
+            )
+            if abiertas:
+                resp += "Vacantes abiertas recientes:\n" + "\n".join(
+                    f"• **#{v['id']} {v['titulo']}** — *{v['empresa']}* ({v['total_postulados']} postulados)"
+                    for v in abiertas[:5]
+                )
+            resp += "\n\n💡 Como Superadmin puedes publicar vacantes directamente desde **Aprobación de Empleos** o pedirme *'analiza el cv de ...'*."
+            return {"respuesta": resp, "fuente": "postgresql_admin", "tipo_consulta": "admin_vacantes"}
+
+        resp = f"⏳ **Vacantes pendientes de aprobación ({len(pendientes)}):**\n\n"
+        for v in pendientes[:8]:
+            resp += f"• **#{v['id']} — {v['titulo']}** (*{v['empresa']}*, {v['ciudad']}, {v['salario']})\n"
+        resp += "\n⚡ **Control rápido:** escríbeme **`aprobar vacante <ID>`** o **`aprobar todas las pendientes`** para publicarlas ahora mismo."
+        return {"respuesta": resp, "fuente": "postgresql_admin", "tipo_consulta": "admin_pendientes"}
+
+    if any(k in msg for k in ["ticket", "soporte", "ayuda", "incidente"]):
+        if not tickets:
+            return {
+                "respuesta": "🎫 No hay tickets de soporte registrados actualmente en PostgreSQL. Puedes gestionar la cola desde la pestaña **Mesa de Soporte**.",
+                "fuente": "postgresql_admin",
+                "tipo_consulta": "admin_soporte",
+            }
+        resp = (
+            f"🎫 **Resumen de Mesa de Soporte:** "
+            f"Pendientes: **{stats.get('tickets_pendientes', 0)}** · "
+            f"En proceso: **{stats.get('tickets_en_proceso', 0)}** · "
+            f"Resueltos: **{stats.get('tickets_resueltos', 0)}**\n\n"
+        )
+        for t in tickets[:6]:
+            resp += f"• **{t['codigo']}** [{t['estado']}] — *{t['asunto']}* ({t['usuario']} · prioridad {t['prioridad']})\n"
+        return {"respuesta": resp, "fuente": "postgresql_admin", "tipo_consulta": "admin_soporte"}
+
+    if any(k in msg for k in ["empresa", "empresas", "nit", "reclutador"]):
+        resp = f"🏢 **Empresas registradas en PostgreSQL ({len(empresas)}):**\n\n"
+        for e in empresas[:8]:
+            resp += f"• **#{e['id']} {e['nombre']}** — Sector: {e['sector'] or 'General'} · {e['vacantes_count']} vacantes · {e['reclutadores_count']} reclutadores\n"
+        resp += "\n💡 Puedes publicar vacantes en cualquiera de estas empresas o asignar un reclutador con **`dar empresa a <correo>`**."
+        return {"respuesta": resp, "fuente": "postgresql_admin", "tipo_consulta": "admin_empresas"}
+
+    if any(k in msg for k in ["cv", "hoja de vida", "hojas de vida", "candidato", "candidatos"]):
+        resp = f"📄 **Candidatos con Hoja de Vida cargada ({len(candidatos_cv)}):**\n\n"
+        if not candidatos_cv:
+            resp += "Ningún candidato ha subido su CV todavía. Puedes subir y analizar cualquier archivo PDF/DOCX en el panel derecho de esta pestaña."
+        else:
+            for c in candidatos_cv[:8]:
+                resp += f"• **{c['nombre']}** ({c['email']}) — Archivo: `{c['cv_nombre']}` · Puntaje: **{c['cv_score']}/100**\n"
+            resp += "\n💡 Escríbeme **`analiza el cv de <nombre o correo>`** para ver su auditoría completa y match con vacantes."
+        return {"respuesta": resp, "fuente": "postgresql_admin", "tipo_consulta": "admin_cvs"}
+
+    # Resumen general abierto para Superadmin / Admin
+    rol_txt = "Superadmin (Control Total: Admin + Soporte + Empresa)" if is_super else "Administrador"
+    resp = (
+        f"🛡️ **Asistente Abierto de PrepIA — Modo {rol_txt}**\n\n"
+        f"📊 **Panorama actual en PostgreSQL:**\n"
+        f"• **Usuarios:** {stats.get('total_users', 0)} totales ({stats.get('candidates', 0)} candidatos, "
+        f"{stats.get('companies', 0)} empresas, {stats.get('support_agents', 0)} soporte, {stats.get('admins', 0)} admins)\n"
+        f"• **Vacantes:** {stats.get('active_jobs', 0)} abiertas · {stats.get('pending_jobs', 0)} pendientes de aprobación\n"
+        f"• **Postulaciones:** {stats.get('total_applications', 0)} · **CVs cargados:** {stats.get('total_cvs', 0)}\n"
+        f"• **Tickets de soporte:** {stats.get('tickets_pendientes', 0)} pendientes · {stats.get('tickets_en_proceso', 0)} en proceso\n\n"
+        "⚡ **Comandos y consultas que puedo hacer por ti ahora mismo:**\n"
+        "• *'aprobar vacante <ID>'* o *'aprobar todas las pendientes'*\n"
+        "• *'dar soporte a <correo>'* o *'dar empresa a <correo>'*\n"
+        "• *'analiza el cv de <nombre o correo>'* (o sube cualquier PDF/DOCX aquí a la derecha)\n"
+        "• Pregúntame libremente sobre vacantes, empresas, candidatos, tickets o estrategia de selección."
+    )
+    return {"respuesta": resp, "fuente": "postgresql_admin", "tipo_consulta": "admin_resumen"}
 
 

@@ -49,19 +49,22 @@ export function CompanyDashboard() {
   const [isSendingInterest, setIsSendingInterest] = useState(false);
 
   const currentUser = getCurrentUser();
+  const isSuperAdmin = Boolean(currentUser?.rol === "admin" && currentUser?.es_admin_principal);
+  const [selectedEmpresaId, setSelectedEmpresaId] = useState<number | null>(null);
 
-  const loadOverview = useCallback(async () => {
+  const loadOverview = useCallback(async (overrideEmpresaId?: number | null) => {
     setIsLoading(true);
     setErrorMsg("");
     try {
-      const data = await apiGetCompanyOverview();
+      const targetId = overrideEmpresaId !== undefined ? overrideEmpresaId : selectedEmpresaId;
+      const data = await apiGetCompanyOverview(targetId);
       setOverview(data);
     } catch (err: any) {
       setErrorMsg(err?.message || "No se pudo cargar la información de la empresa.");
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [selectedEmpresaId]);
 
   useEffect(() => {
     loadOverview();
@@ -84,7 +87,10 @@ export function CompanyDashboard() {
     try {
       const res = editingId
         ? await apiUpdateCompanyVacancy(editingId, payload)
-        : await apiCreateCompanyVacancy(payload);
+        : await apiCreateCompanyVacancy({
+            ...payload,
+            empresa_id: payload.empresa_id ?? selectedEmpresaId ?? empresa?.id ?? undefined,
+          });
       setIsVacancyModalOpen(false);
       setEditingVacancy(null);
       setSuccessMsg(res.mensaje);
@@ -236,8 +242,25 @@ export function CompanyDashboard() {
                 </p>
                 <div className="flex items-center gap-2 flex-wrap mt-2">
                   <Badge className="bg-green-100 dark:bg-green-950/80 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800 text-xs">
-                    Empresa / Reclutador
+                    {isSuperAdmin ? "Superadmin · Permisos de Empresa" : "Empresa / Reclutador"}
                   </Badge>
+                  {overview?.empresas_disponibles && overview.empresas_disponibles.length > 0 && currentUser?.rol === "admin" && (
+                    <select
+                      value={String(selectedEmpresaId ?? empresa?.id ?? "")}
+                      onChange={(e) => {
+                        const nextId = e.target.value ? Number(e.target.value) : null;
+                        setSelectedEmpresaId(nextId);
+                        loadOverview(nextId);
+                      }}
+                      className="h-7 rounded-full border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-slate-900 px-3 text-xs font-medium text-gray-800 dark:text-slate-200"
+                    >
+                      {overview.empresas_disponibles.map((emp) => (
+                        <option key={emp.id} value={String(emp.id)}>
+                          Gestionando: {emp.nombre}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                   <button
                     type="button"
                     onClick={() => setActiveTab("profile")}
@@ -255,7 +278,7 @@ export function CompanyDashboard() {
             </div>
 
             <div className="flex items-center gap-2">
-              <Button variant="outline" onClick={loadOverview} disabled={isLoading}>
+              <Button variant="outline" onClick={() => loadOverview()} disabled={isLoading}>
                 <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? "animate-spin" : ""}`} />
                 Actualizar
               </Button>
@@ -622,6 +645,9 @@ export function CompanyDashboard() {
         editingVacancy={editingVacancy}
         defaultDepartamento={empresa?.departamento || "Bogotá D.C."}
         defaultCiudad={empresa?.ciudad || "Bogotá"}
+        companyOptions={isSuperAdmin ? overview?.empresas_disponibles : undefined}
+        defaultEmpresaId={selectedEmpresaId ?? empresa?.id ?? null}
+        directPublish={isSuperAdmin}
         isSubmitting={isSubmittingVacancy}
         onClose={() => {
           setIsVacancyModalOpen(false);

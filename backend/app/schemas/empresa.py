@@ -554,6 +554,7 @@ class VacanteUpsertRequest(BaseModel):
     preguntas_filtro: List[PreguntaFiltroItem] = Field(default_factory=list)
     puntaje_minimo: float = Field(default=60.0, ge=0, le=100)
     perfil_id: Optional[int] = None
+    empresa_id: Optional[int] = None
 
     @model_validator(mode="after")
     def _validate_vacancy_fields(self) -> "VacanteUpsertRequest":

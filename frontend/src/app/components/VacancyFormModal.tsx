@@ -30,6 +30,9 @@ interface VacancyFormModalProps {
   editingVacancy: CompanyVacancyItem | null;
   defaultDepartamento?: string;
   defaultCiudad?: string;
+  companyOptions?: { id: number; nombre: string; sector?: string | null }[];
+  defaultEmpresaId?: number | null;
+  directPublish?: boolean;
   isSubmitting: boolean;
   onClose: () => void;
   onSubmit: (payload: CompanyVacancyPayload, editingId: number | null) => Promise<void>;
@@ -40,10 +43,16 @@ export function VacancyFormModal({
   editingVacancy,
   defaultDepartamento = "Bogotá D.C.",
   defaultCiudad = "Bogotá",
+  companyOptions,
+  defaultEmpresaId = null,
+  directPublish = false,
   isSubmitting,
   onClose,
   onSubmit,
 }: VacancyFormModalProps) {
+  const [selectedEmpresaId, setSelectedEmpresaId] = useState<string>(
+    defaultEmpresaId ? String(defaultEmpresaId) : companyOptions?.[0] ? String(companyOptions[0].id) : ""
+  );
   const [titulo, setTitulo] = useState("");
   const [categoriaArea, setCategoriaArea] = useState(AREAS_LABORALES_CO[0]);
   const [cantidadVacantes, setCantidadVacantes] = useState("1");
@@ -83,6 +92,9 @@ export function VacancyFormModal({
   useEffect(() => {
     if (!open) return;
     setLocalError("");
+    setSelectedEmpresaId(
+      defaultEmpresaId ? String(defaultEmpresaId) : companyOptions?.[0] ? String(companyOptions[0].id) : ""
+    );
     if (editingVacancy) {
       setTitulo(editingVacancy.titulo);
       setCategoriaArea(editingVacancy.categoria_area || AREAS_LABORALES_CO[0]);
@@ -228,6 +240,7 @@ export function VacancyFormModal({
         idiomas,
         preguntas_filtro: preguntasFiltro,
         puntaje_minimo: Number(puntajeMinimo) || 60,
+        empresa_id: selectedEmpresaId ? Number(selectedEmpresaId) : undefined,
       },
       editingVacancy?.id ?? null
     );
@@ -244,7 +257,9 @@ export function VacancyFormModal({
             <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
               {editingVacancy
                 ? "Actualiza las condiciones de la oferta. Si estaba rechazada volverá a revisión del administrador."
-                : 'Quedará en estado "Pendiente de aprobación" hasta que un administrador la revise.'}
+                : directPublish
+                  ? "Como Superadmin, la vacante se publicará directamente en estado \"Abierta\"."
+                  : 'Quedará en estado "Pendiente de aprobación" hasta que un administrador la revise.'}
             </p>
           </div>
           <button type="button" onClick={onClose} className="p-1 text-gray-400 hover:text-gray-700">
@@ -259,6 +274,24 @@ export function VacancyFormModal({
         )}
 
         <form onSubmit={handleFormSubmit} className="space-y-5">
+          {companyOptions && companyOptions.length > 0 && !editingVacancy && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
+                Empresa que publica la vacante *
+              </label>
+              <select
+                value={selectedEmpresaId}
+                onChange={(e) => setSelectedEmpresaId(e.target.value)}
+                className="w-full h-10 rounded-lg border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm"
+              >
+                {companyOptions.map((emp) => (
+                  <option key={emp.id} value={String(emp.id)}>
+                    {emp.nombre} {emp.sector ? `(${emp.sector})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {/* Cargo y Área */}
           <div className="grid sm:grid-cols-12 gap-3">
             <div className="sm:col-span-6">
@@ -754,7 +787,9 @@ export function VacancyFormModal({
                 ? "Guardando..."
                 : editingVacancy
                   ? "Guardar Cambios"
-                  : "Enviar a Aprobación"}
+                  : directPublish
+                    ? "Publicar Vacante"
+                    : "Enviar a Aprobación"}
             </Button>
           </div>
         </form>

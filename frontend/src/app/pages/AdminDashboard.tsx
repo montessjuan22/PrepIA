@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
 import { Navbar } from "../components/Navbar";
 import { SupportTicketsPanel } from "../components/SupportTicketsPanel";
+import { AdminAIChatAndCVTab } from "../components/AdminAIChatAndCVTab";
+import { VacancyFormModal } from "../components/VacancyFormModal";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -10,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import {
   apiCreateAdminCategory,
   apiCreateAdminResource,
+  apiCreateCompanyVacancy,
   apiDeleteAdminCategory,
   apiDeleteAdminResource,
   apiDeleteAdminUser,
@@ -22,6 +25,7 @@ import {
   AdminOverviewResponse,
   AdminUserItem,
   AdminVacancyItem,
+  CompanyVacancyPayload,
   PreparationResource,
   SystemRole,
 } from "../../services/api";
@@ -30,7 +34,7 @@ import {
   Trash2, UserCheck, Ban, TrendingUp, Settings, User,
   Crown, RefreshCw, AlertCircle, Plus, KeyRound, Lock, UserMinus,
   CheckCircle, XCircle, Clock, MapPin, Banknote, ChevronLeft, ChevronRight,
-  BookOpen, Upload, ExternalLink, Headphones
+  BookOpen, Upload, ExternalLink, Headphones, Bot
 } from "lucide-react";
 
 const ROLE_LABELS: Record<SystemRole, string> = {
@@ -68,11 +72,13 @@ export function AdminDashboard() {
   const [newCategoryDesc, setNewCategoryDesc] = useState("");
   const [isCreatingCategory, setIsCreatingCategory] = useState(false);
 
-  // Estado para aprobación de empleos subidos por empresas
+  // Estado para aprobación de empleos y publicación directa (Superadmin)
   const [vacancyFilter, setVacancyFilter] = useState<string>("todas");
   const [busyVacancyId, setBusyVacancyId] = useState<number | null>(null);
   const [rejectingVacancyId, setRejectingVacancyId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [isVacancyModalOpen, setIsVacancyModalOpen] = useState(false);
+  const [isSubmittingVacancy, setIsSubmittingVacancy] = useState(false);
 
   // Estado para publicar material real de preparación
   const [resTitle, setResTitle] = useState("");
@@ -196,6 +202,21 @@ export function AdminDashboard() {
     }
   };
   const analytics = overview?.analytics;
+
+  const handleCreateAdminVacancy = async (payload: CompanyVacancyPayload) => {
+    setIsSubmittingVacancy(true);
+    setErrorMsg("");
+    try {
+      const res = await apiCreateCompanyVacancy(payload);
+      setIsVacancyModalOpen(false);
+      await loadOverview();
+      showSuccess(res.mensaje || "Vacante publicada correctamente.");
+    } catch (err: any) {
+      setErrorMsg(err?.message || "No se pudo publicar la vacante.");
+    } finally {
+      setIsSubmittingVacancy(false);
+    }
+  };
 
   const handleReviewVacancy = async (
     vacanteId: number,
@@ -395,10 +416,16 @@ export function AdminDashboard() {
                     {isPrimaryAdmin ? "Administrador Principal (Superadmin)" : "Administrador"}
                   </Badge>
                   {isPrimaryAdmin && (
-                    <Badge className="bg-cyan-100 dark:bg-cyan-950/80 text-cyan-800 dark:text-cyan-300 border border-cyan-200 dark:border-cyan-800 text-xs flex items-center gap-1">
-                      <Headphones className="w-3.5 h-3.5" />
-                      Permisos de Agente de Soporte
-                    </Badge>
+                    <>
+                      <Badge className="bg-cyan-100 dark:bg-cyan-950/80 text-cyan-800 dark:text-cyan-300 border border-cyan-200 dark:border-cyan-800 text-xs flex items-center gap-1">
+                        <Headphones className="w-3.5 h-3.5" />
+                        Permisos de Agente de Soporte
+                      </Badge>
+                      <Badge className="bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-xs flex items-center gap-1">
+                        <Building2 className="w-3.5 h-3.5" />
+                        Permisos de Empresa / Vacantes
+                      </Badge>
+                    </>
                   )}
                   <Badge variant="outline" className="text-xs border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300">
                     PostgreSQL en vivo
@@ -572,6 +599,10 @@ export function AdminDashboard() {
                     Mesa de Soporte
                   </TabsTrigger>
                 )}
+                <TabsTrigger value="ai-tools" className="shrink-0 whitespace-nowrap gap-1.5">
+                  <Bot className="w-3.5 h-3.5 text-[#0066CC]" />
+                  Asistente IA y CV
+                </TabsTrigger>
                 <TabsTrigger value="categories" className="shrink-0 whitespace-nowrap">
                   Categorías Profesionales
                 </TabsTrigger>
@@ -1224,20 +1255,47 @@ export function AdminDashboard() {
             </TabsContent>
           )}
 
+          {/* Dedicated Open AI Chatbot & Global CV Analyzer Tab */}
+          <TabsContent value="ai-tools">
+            <AdminAIChatAndCVTab
+              users={usersList}
+              vacancies={vacanciesList}
+              onDataMutated={loadOverview}
+            />
+          </TabsContent>
+
           {/* Vacancies Approval Tab */}
           <TabsContent value="vacancies">
             <Card className="p-6 bg-white dark:bg-[#141d33] border border-gray-200 dark:border-slate-800">
               <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
                 <div>
                   <h3 className="text-xl font-bold text-gray-900 dark:text-white">
-                    Aprobación de Empleos Subidos por Empresas
+                    Aprobación y Publicación de Empleos
                   </h3>
                   <p className="text-sm text-gray-500 dark:text-slate-400 mt-0.5">
-                    Los empleos creados por las empresas requieren aprobación del administrador antes de aparecer a los candidatos.
+                    Aprueba empleos de empresas o publica nuevas vacantes directamente con tus permisos de Superadmin.
                   </p>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => setIsVacancyModalOpen(true)}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                  >
+                    <Plus className="w-4 h-4 mr-1.5" />
+                    Publicar Vacante
+                  </Button>
+                  <Link to="/dashboard/company">
+                    <Button size="sm" variant="outline" className="border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300">
+                      <Building2 className="w-4 h-4 mr-1.5" />
+                      Panel Empresa (ATS)
+                    </Button>
+                  </Link>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 mb-5">
                   {[
                     { key: "todas", label: `Todas (${vacanciesList.length})` },
                     {
@@ -1262,7 +1320,6 @@ export function AdminDashboard() {
                       {f.label}
                     </Button>
                   ))}
-                </div>
               </div>
 
               <div className="space-y-4">
@@ -1767,6 +1824,18 @@ export function AdminDashboard() {
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* Modal Publicar Vacante como Superadmin / Empresa */}
+      <VacancyFormModal
+        open={isVacancyModalOpen}
+        editingVacancy={null}
+        companyOptions={empresasList}
+        defaultEmpresaId={empresasList[0]?.id ?? null}
+        directPublish={isPrimaryAdmin}
+        isSubmitting={isSubmittingVacancy}
+        onClose={() => setIsVacancyModalOpen(false)}
+        onSubmit={handleCreateAdminVacancy}
+      />
     </div>
   );
 }
