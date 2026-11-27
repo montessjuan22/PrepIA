@@ -1,0 +1,431 @@
+-- ============================================================
+-- Esquema relacional para PrepIA (v4)
+-- v4 convierte PrepIA en una plataforma de SELECCIÓN de candidatos para
+-- cualquier perfil profesional: empresas, reclutadores, vacantes,
+-- postulaciones con hoja de vida, prueba por vacante, ranking y decisión.
+-- El modo práctica del candidato se conserva (sesiones_prueba.modo).
+-- v3 añadió: catálogo de lenguajes y análisis de comunicación (informativo).
+-- v3 añade: catálogo de lenguajes de programación (ya no limitado a 2 por
+-- CHECK) y grabaciones_sesion/analisis_comunicacion para el análisis de
+-- lenguaje corporal, tono y ritmo de habla.
+-- Compatible con PostgreSQL (ajustar tipos ENUM/SERIAL si se usa MySQL)
+-- ============================================================
+
+-- v4: empresas que publican vacantes (las crea un administrador)
+CREATE TABLE empresas (
+    id          SERIAL PRIMARY KEY,
+    nombre      VARCHAR(150) NOT NULL,
+    nit         VARCHAR(20) UNIQUE,
+    sector      VARCHAR(100),
+    sitio_web   VARCHAR(255),
+    activa      BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- v4: perfiles profesionales (la plataforma ya no es solo para programadores)
+CREATE TABLE perfiles_profesionales (
+    id           SERIAL PRIMARY KEY,
+    nombre       VARCHAR(80) NOT NULL UNIQUE,
+    descripcion  VARCHAR(255)
+);
+
+CREATE TABLE usuarios (
+    id                SERIAL PRIMARY KEY,
+    nombre            VARCHAR(120),
+    email             VARCHAR(150) NOT NULL UNIQUE,
+    password_hash     VARCHAR(255),
+    telefono          VARCHAR(20),
+    -- 'usuario' = candidato. v4 agrega 'reclutador'.
+    rol               VARCHAR(20) NOT NULL DEFAULT 'usuario'
+                      CHECK (rol IN ('usuario','reclutador','agente_soporte','admin')),
+    empresa_id        INT REFERENCES empresas(id),   -- solo para reclutadores
+    email_verificado  BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at        TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMP NOT NULL DEFAULT NOW(),
+    deleted_at        TIMESTAMP,
+    CONSTRAINT ck_usuarios_reclutador_empresa CHECK (rol <> 'reclutador' OR empresa_id IS NOT NULL)
+);
+
+CREATE TABLE identidades_oauth (
+    id            SERIAL PRIMARY KEY,
+    usuario_id    INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    proveedor     VARCHAR(10) NOT NULL CHECK (proveedor IN ('google','github')),
+    proveedor_id  VARCHAR(255) NOT NULL,
+    created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (proveedor, proveedor_id)
+);
+
+CREATE TABLE tokens_verificacion_email (
+    id           SERIAL PRIMARY KEY,
+    usuario_id   INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    codigo_hash  VARCHAR(255) NOT NULL,
+    expira_en    TIMESTAMP NOT NULL,
+    usado        BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at   TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE tokens_recuperacion (
+    id           SERIAL PRIMARY KEY,
+    usuario_id   INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    tipo         VARCHAR(20) NOT NULL CHECK (tipo IN ('enlace_correo','otp_sms')),
+    codigo_hash  VARCHAR(255) NOT NULL,
+    expira_en    TIMESTAMP NOT NULL,
+    usado        BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at   TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE sesiones_auth (
+    id          SERIAL PRIMARY KEY,
+    usuario_id  INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    token_hash  VARCHAR(255) NOT NULL,
+    ip          VARCHAR(45),
+    user_agent  VARCHAR(255),
+    creado_en   TIMESTAMP NOT NULL DEFAULT NOW(),
+    expira_en   TIMESTAMP NOT NULL,
+    revocado    BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE niveles_dificultad (
+    id          SERIAL PRIMARY KEY,
+    nombre      VARCHAR(30) NOT NULL UNIQUE,
+    descripcion VARCHAR(255),
+    updated_at  TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE temas (
+    id     SERIAL PRIMARY KEY,
+    nombre VARCHAR(60) NOT NULL UNIQUE
+);
+
+-- v3: catálogo abierto de lenguajes soportados (antes era un CHECK fijo a
+-- 'javascript'/'python' en respuestas_sesion). Agregar un lenguaje nuevo ya
+-- no requiere alterar la tabla, solo insertar una fila aquí.
+CREATE TABLE lenguajes_programacion (
+    id      SERIAL PRIMARY KEY,
+    nombre  VARCHAR(30) NOT NULL UNIQUE,
+    activo  BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE ejercicios (
+    id                  SERIAL PRIMARY KEY,
+    enunciado           TEXT NOT NULL,
+    nivel_id            INT NOT NULL REFERENCES niveles_dificultad(id),
+    -- v4: tipo de pregunta (código, opción múltiple o respuesta abierta)
+    tipo                VARCHAR(20) NOT NULL DEFAULT 'codigo'
+                        CHECK (tipo IN ('codigo','opcion_multiple','abierta')),
+    perfil_id           INT REFERENCES perfiles_profesionales(id),
+    respuesta_esperada  TEXT,
+    created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE ejercicio_temas (
+    ejercicio_id  INT NOT NULL REFERENCES ejercicios(id) ON DELETE CASCADE,
+    tema_id       INT NOT NULL REFERENCES temas(id) ON DELETE CASCADE,
+    PRIMARY KEY (ejercicio_id, tema_id)
+);
+
+-- v3: un ejercicio puede resolverse en varios lenguajes (antes era implícito
+-- y limitado a javascript/python vía el CHECK de respuestas_sesion.lenguaje)
+CREATE TABLE ejercicio_lenguajes (
+    ejercicio_id  INT NOT NULL REFERENCES ejercicios(id) ON DELETE CASCADE,
+    lenguaje_id   INT NOT NULL REFERENCES lenguajes_programacion(id) ON DELETE CASCADE,
+    PRIMARY KEY (ejercicio_id, lenguaje_id)
+);
+
+CREATE TABLE pistas (
+    id            SERIAL PRIMARY KEY,
+    ejercicio_id  INT NOT NULL REFERENCES ejercicios(id) ON DELETE CASCADE,
+    orden         INT NOT NULL,
+    contenido     TEXT NOT NULL
+);
+
+CREATE TABLE casos_prueba (
+    id               SERIAL PRIMARY KEY,
+    ejercicio_id     INT NOT NULL REFERENCES ejercicios(id) ON DELETE CASCADE,
+    entrada          TEXT,
+    salida_esperada  TEXT NOT NULL,
+    es_publico       BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+-- v4: opciones de las preguntas de opción múltiple
+CREATE TABLE opciones_pregunta (
+    id            SERIAL PRIMARY KEY,
+    ejercicio_id  INT NOT NULL REFERENCES ejercicios(id) ON DELETE CASCADE,
+    texto         TEXT NOT NULL,
+    es_correcta   BOOLEAN NOT NULL DEFAULT FALSE,
+    orden         INT
+);
+
+-- v4: hojas de vida cargadas por los candidatos
+CREATE TABLE hojas_de_vida (
+    id              SERIAL PRIMARY KEY,
+    usuario_id      INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    nombre_archivo  VARCHAR(255) NOT NULL,
+    url_archivo     VARCHAR(255) NOT NULL,   -- el archivo vive en almacenamiento externo
+    texto_extraido  TEXT,
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- v4: cargos o vacantes publicadas por una empresa
+CREATE TABLE vacantes (
+    id                       SERIAL PRIMARY KEY,
+    empresa_id               INT NOT NULL REFERENCES empresas(id),
+    reclutador_id            INT NOT NULL REFERENCES usuarios(id),
+    perfil_id                INT REFERENCES perfiles_profesionales(id),
+    titulo                   VARCHAR(150) NOT NULL,
+    descripcion              TEXT,
+    requisitos               TEXT,
+    modalidad                VARCHAR(15) CHECK (modalidad IN ('presencial','remoto','hibrido')),
+    estado                   VARCHAR(15) NOT NULL DEFAULT 'borrador'
+                             CHECK (estado IN ('borrador','abierta','cerrada')),
+    duracion_prueba_minutos  INT,
+    puntaje_minimo           DECIMAL(5,2) NOT NULL DEFAULT 60
+                             CHECK (puntaje_minimo BETWEEN 0 AND 100),
+    peso_cv                  DECIMAL(5,2) NOT NULL DEFAULT 30,
+    peso_prueba              DECIMAL(5,2) NOT NULL DEFAULT 70,
+    fecha_cierre             TIMESTAMP,
+    created_at               TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at               TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_vacantes_pesos CHECK (peso_cv >= 0 AND peso_prueba >= 0 AND peso_cv + peso_prueba = 100)
+);
+
+-- v4: preguntas/ejercicios que forman la prueba de cada vacante
+CREATE TABLE vacante_ejercicios (
+    vacante_id    INT NOT NULL REFERENCES vacantes(id) ON DELETE CASCADE,
+    ejercicio_id  INT NOT NULL REFERENCES ejercicios(id),
+    orden         INT NOT NULL,
+    PRIMARY KEY (vacante_id, ejercicio_id)
+);
+
+-- v4: postulación de un candidato a una vacante
+CREATE TABLE postulaciones (
+    id             SERIAL PRIMARY KEY,
+    vacante_id     INT NOT NULL REFERENCES vacantes(id) ON DELETE CASCADE,
+    usuario_id     INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    hoja_vida_id   INT REFERENCES hojas_de_vida(id),   -- obligatoria si la vacante tiene peso_cv > 0
+    estado         VARCHAR(20) NOT NULL DEFAULT 'postulado'
+                   CHECK (estado IN ('postulado','cv_analizado','prueba_pendiente',
+                                     'prueba_completada','en_revision','aprobado',
+                                     'rechazado','retirado')),
+    -- puntajes 0-100, guardados para poder ordenar el ranking sin recalcular
+    puntaje_cv       DECIMAL(5,2) CHECK (puntaje_cv BETWEEN 0 AND 100),
+    puntaje_prueba   DECIMAL(5,2) CHECK (puntaje_prueba BETWEEN 0 AND 100),
+    puntaje_final    DECIMAL(5,2) CHECK (puntaje_final BETWEEN 0 AND 100),
+    created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (vacante_id, usuario_id)
+);
+
+-- v4: resultado del análisis de la hoja de vida frente a la vacante (IA)
+CREATE TABLE analisis_cv (
+    id                     SERIAL PRIMARY KEY,
+    postulacion_id         INT NOT NULL UNIQUE REFERENCES postulaciones(id) ON DELETE CASCADE,
+    puntaje_afinidad       DECIMAL(5,2) CHECK (puntaje_afinidad BETWEEN 0 AND 100),
+    experiencia_anios      DECIMAL(4,1),
+    habilidades_detectadas TEXT,
+    resumen                TEXT,
+    created_at             TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- v4: historial de decisiones del reclutador (append-only, como los consentimientos)
+CREATE TABLE decisiones_postulacion (
+    id              SERIAL PRIMARY KEY,
+    postulacion_id  INT NOT NULL REFERENCES postulaciones(id) ON DELETE CASCADE,
+    reclutador_id   INT NOT NULL REFERENCES usuarios(id),
+    resultado       VARCHAR(15) NOT NULL CHECK (resultado IN ('aprobado','rechazado','en_revision')),
+    notas           TEXT,
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE sesiones_prueba (
+    id                 SERIAL PRIMARY KEY,
+    usuario_id         INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    nivel_id           INT REFERENCES niveles_dificultad(id),  -- v4: opcional en modo evaluación
+    -- v4: 'practica' (el candidato se prepara) o 'evaluacion' (cuenta para una vacante)
+    modo               VARCHAR(15) NOT NULL DEFAULT 'practica'
+                       CHECK (modo IN ('practica','evaluacion')),
+    postulacion_id     INT REFERENCES postulaciones(id),
+    puntaje            DECIMAL(5,2),
+    duracion_segundos  INT,
+    estado             VARCHAR(20) NOT NULL DEFAULT 'en_progreso'
+                       CHECK (estado IN ('en_progreso','completada')),
+    fecha_inicio       TIMESTAMP NOT NULL DEFAULT NOW(),
+    fecha_fin          TIMESTAMP,
+    CONSTRAINT ck_sesiones_modo_postulacion CHECK (
+        (modo = 'practica' AND postulacion_id IS NULL) OR
+        (modo = 'evaluacion' AND postulacion_id IS NOT NULL)),
+    CONSTRAINT ck_sesiones_practica_nivel CHECK (modo = 'evaluacion' OR nivel_id IS NOT NULL)
+);
+
+CREATE TABLE respuestas_sesion (
+    id                         SERIAL PRIMARY KEY,
+    sesion_id                  INT NOT NULL REFERENCES sesiones_prueba(id) ON DELETE CASCADE,
+    ejercicio_id               INT NOT NULL REFERENCES ejercicios(id),
+    lenguaje_id                INT REFERENCES lenguajes_programacion(id),
+    codigo_usuario             TEXT,                          -- preguntas de tipo 'codigo'
+    respuesta_texto            TEXT,                          -- v4: preguntas 'abierta'
+    opcion_id                  INT REFERENCES opciones_pregunta(id),  -- v4: 'opcion_multiple'
+    es_correcta                BOOLEAN,
+    puntaje                    DECIMAL(5,2) CHECK (puntaje BETWEEN 0 AND 100),  -- v4
+    pistas_usadas              INT NOT NULL DEFAULT 0,
+    intentos                   INT NOT NULL DEFAULT 1,
+    tiempo_respuesta_segundos  INT,
+    created_at                 TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE resultados_ejecucion (
+    id                 SERIAL PRIMARY KEY,
+    respuesta_id       INT NOT NULL REFERENCES respuestas_sesion(id) ON DELETE CASCADE,
+    caso_prueba_id     INT NOT NULL REFERENCES casos_prueba(id),
+    paso               BOOLEAN NOT NULL,
+    tiempo_ejecucion_ms INT,
+    memoria_kb         INT,
+    salida_obtenida    TEXT,
+    created_at         TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE retroalimentaciones_ia (
+    id                   SERIAL PRIMARY KEY,
+    respuesta_id         INT NOT NULL REFERENCES respuestas_sesion(id) ON DELETE CASCADE,
+    fuente               VARCHAR(10) NOT NULL CHECK (fuente IN ('ia','experto')),
+    contenido            TEXT NOT NULL,
+    validada             BOOLEAN NOT NULL DEFAULT TRUE,
+    motivo_invalidacion  VARCHAR(255),
+    created_at           TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- v3: soporte para "Análisis de Lenguaje Corporal y Tono" (RF nuevo — ver
+-- diccionario). Requiere que el frontend capture audio/video de la sesión y
+-- lo suba a almacenamiento externo (S3, etc.); aquí solo se guarda la
+-- referencia y las métricas ya calculadas por el servicio de análisis.
+CREATE TABLE grabaciones_sesion (
+    id                 SERIAL PRIMARY KEY,
+    sesion_id          INT NOT NULL REFERENCES sesiones_prueba(id) ON DELETE CASCADE,
+    tipo               VARCHAR(10) NOT NULL CHECK (tipo IN ('audio','video')),
+    url_archivo        VARCHAR(255) NOT NULL,
+    duracion_segundos  INT,
+    estado             VARCHAR(20) NOT NULL DEFAULT 'pendiente'
+                       CHECK (estado IN ('pendiente','procesando','analizada','error')),
+    created_at         TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE analisis_comunicacion (
+    id                       SERIAL PRIMARY KEY,
+    grabacion_id             INT NOT NULL REFERENCES grabaciones_sesion(id) ON DELETE CASCADE,
+    contacto_visual_pct      DECIMAL(5,2),
+    lenguaje_corporal_score  DECIMAL(5,2),
+    tono_voz_score           DECIMAL(5,2),
+    ritmo_habla_ppm          INT,     -- palabras por minuto
+    palabras_relleno_count   INT,
+    claridad_score           DECIMAL(5,2),
+    resumen                  TEXT,
+    created_at               TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE recomendaciones (
+    id           SERIAL PRIMARY KEY,
+    usuario_id   INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    contenido    TEXT NOT NULL,
+    generada_en  TIMESTAMP NOT NULL DEFAULT NOW(),
+    vista        BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE tickets_soporte (
+    id              SERIAL PRIMARY KEY,
+    codigo          VARCHAR(20) NOT NULL UNIQUE,
+    usuario_id      INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    agente_id       INT REFERENCES usuarios(id),
+    tipo_solicitud  VARCHAR(30) NOT NULL
+                    CHECK (tipo_solicitud IN ('duda','problema_tecnico','solicitud_funcion','error')),
+    asunto          VARCHAR(150) NOT NULL,
+    descripcion     TEXT NOT NULL,
+    captura_url     VARCHAR(255),
+    prioridad       VARCHAR(10) CHECK (prioridad IN ('baja','media','alta')),
+    estado          VARCHAR(20) NOT NULL DEFAULT 'pendiente'
+                    CHECK (estado IN ('pendiente','en_proceso','resuelto','cerrado')),
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE mensajes_ticket (
+    id          SERIAL PRIMARY KEY,
+    ticket_id   INT NOT NULL REFERENCES tickets_soporte(id) ON DELETE CASCADE,
+    autor_id    INT NOT NULL REFERENCES usuarios(id),
+    mensaje     TEXT NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE historial_consentimientos (
+    id          SERIAL PRIMARY KEY,
+    usuario_id  INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    tipo        VARCHAR(20) NOT NULL CHECK (tipo IN ('marketing','analiticas','terceros','grabacion','compartir_empresa')),
+    aceptado    BOOLEAN NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE solicitudes_privacidad (
+    id             SERIAL PRIMARY KEY,
+    usuario_id     INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    tipo           VARCHAR(20) NOT NULL CHECK (tipo IN ('descarga_datos','eliminacion_cuenta')),
+    estado         VARCHAR(20) NOT NULL DEFAULT 'solicitado'
+                   CHECK (estado IN ('solicitado','procesado','cancelado')),
+    created_at     TIMESTAMP NOT NULL DEFAULT NOW(),
+    completado_en  TIMESTAMP
+);
+
+CREATE TABLE logs_auditoria (
+    id          SERIAL PRIMARY KEY,
+    usuario_id  INT REFERENCES usuarios(id),
+    accion      VARCHAR(100) NOT NULL,
+    entidad     VARCHAR(60),
+    entidad_id  INT,
+    ip          VARCHAR(45),
+    user_agent  VARCHAR(255),
+    created_at  TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================
+-- Índices recomendados para consultas frecuentes
+-- ============================================================
+CREATE INDEX idx_sesiones_prueba_usuario ON sesiones_prueba(usuario_id);
+CREATE INDEX idx_respuestas_sesion_sesion ON respuestas_sesion(sesion_id);
+CREATE INDEX idx_resultados_ejecucion_respuesta ON resultados_ejecucion(respuesta_id);
+CREATE INDEX idx_tickets_usuario ON tickets_soporte(usuario_id);
+CREATE INDEX idx_tickets_agente ON tickets_soporte(agente_id);
+CREATE INDEX idx_tokens_recuperacion_usuario ON tokens_recuperacion(usuario_id);
+CREATE INDEX idx_identidades_oauth_usuario ON identidades_oauth(usuario_id);
+CREATE INDEX idx_historial_consentimientos_usuario_tipo ON historial_consentimientos(usuario_id, tipo);
+CREATE INDEX idx_logs_auditoria_usuario ON logs_auditoria(usuario_id);
+CREATE INDEX idx_grabaciones_sesion_sesion ON grabaciones_sesion(sesion_id);
+CREATE INDEX idx_analisis_comunicacion_grabacion ON analisis_comunicacion(grabacion_id);
+CREATE INDEX idx_respuestas_sesion_lenguaje ON respuestas_sesion(lenguaje_id);
+CREATE INDEX idx_usuarios_empresa ON usuarios(empresa_id);
+CREATE INDEX idx_ejercicios_perfil ON ejercicios(perfil_id);
+CREATE INDEX idx_opciones_pregunta_ejercicio ON opciones_pregunta(ejercicio_id);
+CREATE INDEX idx_hojas_de_vida_usuario ON hojas_de_vida(usuario_id);
+CREATE INDEX idx_vacantes_empresa ON vacantes(empresa_id);
+CREATE INDEX idx_vacantes_estado ON vacantes(estado);
+CREATE INDEX idx_postulaciones_vacante ON postulaciones(vacante_id);
+CREATE INDEX idx_postulaciones_usuario ON postulaciones(usuario_id);
+CREATE INDEX idx_decisiones_postulacion ON decisiones_postulacion(postulacion_id);
+CREATE INDEX idx_sesiones_prueba_postulacion ON sesiones_prueba(postulacion_id);
+
+-- Datos base del catálogo de niveles
+INSERT INTO niveles_dificultad (nombre, descripcion) VALUES
+    ('Fácil', 'Ejercicios introductorios'),
+    ('Medio', 'Ejercicios de dificultad intermedia'),
+    ('Difícil', 'Ejercicios avanzados');
+
+-- Datos base del catálogo de lenguajes (v3 — antes limitado por CHECK a 2)
+INSERT INTO lenguajes_programacion (nombre) VALUES
+    ('javascript'), ('python'), ('java'), ('c++'), ('typescript');
+
+-- Datos base de perfiles profesionales (v4; ejemplos iniciales, el admin puede ampliarlos)
+INSERT INTO perfiles_profesionales (nombre, descripcion) VALUES
+    ('Desarrollo de software', 'Programadores y roles afines'),
+    ('Datos y analítica', 'Análisis de datos, BI y ciencia de datos'),
+    ('Diseño UX/UI', 'Diseño de producto e interfaces'),
+    ('Soporte técnico TI', 'Mesa de ayuda e infraestructura'),
+    ('Administrativo y contable', 'Gestión administrativa, contable y financiera');

@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: prepia_user
+      POSTGRES_PASSWORD: prepia_pass
+      POSTGRES_DB: prepia_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - prepia_pgdata:/var/lib/postgresql/data
+
+volumes:
+  prepia_pgdata:

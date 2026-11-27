@@ -1,7 +1,10 @@
+version: '3.8'
+
 services:
   db:
     image: postgres:16
-    restart: unless-stopped
+    container_name: prepia-db
+    restart: always
     environment:
       POSTGRES_USER: prepia_user
       POSTGRES_PASSWORD: prepia_pass
@@ -9,7 +12,42 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - prepia_pgdata:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prepia_user -d prepia_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: prepia-backend
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://prepia_user:prepia_pass@db:5432/prepia_db
+      - JWT_SECRET_KEY=zISw2PchxO_oBGSpdXbR3h2WpXS01dyLE4nT6dksd_jWaJ0SDmmQa9Ntp4T22KWB
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - REFRESH_TOKEN_EXPIRE_DAYS=7
+      - CORS_ORIGINS=["http://localhost:3000","http://localhost:80"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: prepia-frontend
+    restart: always
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
 
 volumes:
-  prepia_pgdata:
+  postgres_data:
