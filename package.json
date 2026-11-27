@@ -1,0 +1,26 @@
+{
+  "name": "prepia-monorepo",
+  "version": "1.0.0",
+  "description": "PrepIA — Plataforma de Evaluación y Entrenamiento con Inteligencia Artificial (SENA)",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "powershell -Command \"cd backend; .\\venv\\Scripts\\activate; uvicorn app.main:app --reload --port 8000\"",
+    "build": "npm --prefix frontend run build",
+    "preview": "npm --prefix frontend run preview",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
+  },
+  "keywords": [
+    "prepia",
+    "sena",
+    "fastapi",
+    "react",
+    "postgresql",
+    "ai"
+  ],
+  "author": "Juan Sebastian Montes Osorio, Thomas Cortez, Luis Ibarra",
+  "license": "MIT"
+}

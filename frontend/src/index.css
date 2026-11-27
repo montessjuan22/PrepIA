@@ -1,0 +1,158 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #0066CC;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #f1f5f9;
+  --accent-foreground: #0f172a;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #e2e8f0;
+  --input: #d1d5db;
+  --ring: #0066CC;
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: #0b0f19;
+  --foreground: #f8fafc;
+  --card: #141d33;
+  --card-foreground: #f8fafc;
+  --popover: #141d33;
+  --popover-foreground: #f8fafc;
+  --primary: #0066CC;
+  --primary-foreground: #ffffff;
+  --secondary: #1e293b;
+  --secondary-foreground: #f8fafc;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8;
+  --accent: #1e293b;
+  --accent-foreground: #f8fafc;
+  --destructive: #f87171;
+  --destructive-foreground: #ffffff;
+  --border: #26334d;
+  --input: #26334d;
+  --ring: #38bdf8;
+}
+
+body {
+  margin: 0;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================
+   REGLAS GLOBALES DE ALTO CONTRASTE (MODO CLARO Y MODO OSCURO)
+   ============================================================ */
+
+/* En Modo Oscuro (.dark): asegurar que todo texto oscuro sea blanco/claro */
+.dark {
+  color-scheme: dark;
+}
+
+.dark h1, .dark h2, .dark h3, .dark h4, .dark h5, .dark h6 {
+  color: #f8fafc !important;
+}
+
+.dark .text-gray-900,
+.dark .text-slate-900,
+.dark .text-zinc-900 {
+  color: #f8fafc !important;
+}
+
+.dark .text-gray-800,
+.dark .text-slate-800 {
+  color: #f1f5f9 !important;
+}
+
+.dark .text-gray-700,
+.dark .text-slate-700 {
+  color: #e2e8f0 !important;
+}
+
+.dark .text-gray-600,
+.dark .text-slate-600 {
+  color: #cbd5e1 !important;
+}
+
+.dark .text-gray-500,
+.dark .text-slate-500 {
+  color: #94a3b8 !important;
+}
+
+/* Fondos y bordes en Modo Oscuro */
+.dark .bg-white {
+  background-color: #141d33 !important;
+}
+
+.dark .bg-gray-50,
+.dark .bg-slate-50 {
+  background-color: #0b0f19 !important;
+}
+
+.dark .bg-gray-100,
+.dark .bg-slate-100 {
+  background-color: #1a243e !important;
+}
+
+.dark .border-gray-100,
+.dark .border-gray-200,
+.dark .border-slate-200 {
+  border-color: #26334d !important;
+}
+
+.dark .border-gray-300,
+.dark .border-slate-300 {
+  border-color: #334155 !important;
+}
+
+/* En Modo Claro (sin .dark): asegurar texto oscuro de máximo contraste */
+html:not(.dark) body {
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+html:not(.dark) h1, 
+html:not(.dark) h2, 
+html:not(.dark) h3, 
+html:not(.dark) h4 {
+  color: #0f172a;
+}
+
+/* Inputs y controles */
+input, textarea, select {
+  color: #0f172a !important;
+}
+
+.dark input, .dark textarea, .dark select {
+  color: #f8fafc !important;
+  background-color: #0e1526 !important;
+  border-color: #26334d !important;
+}
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover, 
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #0f172a !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+.dark input:-webkit-autofill,
+.dark input:-webkit-autofill:hover, 
+.dark input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #f8fafc !important;
+  -webkit-box-shadow: 0 0 0px 1000px #0e1526 inset !important;
+}
